@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <time.h>
-#include <stdatomic.h>
+#include <atomic>
 #include <sys/epoll.h>
 
 #define TAG "PhantomProxy"
@@ -110,19 +110,19 @@ static int fec_add_packet(fec_encoder_t* enc, const uint8_t* data, int len,
 
 // ---- Proxy State ----
 typedef struct {
-    atomic_int      running;
+    std::atomic<int>      running;
     int             udp_sock;
     struct sockaddr_in daemon_addr;
     pthread_t       proxy_thread;
     pthread_t       recv_thread;
 
     // Stats
-    atomic_long     packets_sent;
-    atomic_long     packets_received;
-    atomic_long     total_latency_us;
+    std::atomic<long>     packets_sent;
+    std::atomic<long>     packets_received;
+    std::atomic<long>     total_latency_us;
 
     // Sequence counter
-    atomic_uint     seq_counter;
+    std::atomic<uint32_t>     seq_counter;
 
     // eBPF ring buffer fd
     int             ringbuf_fd;
@@ -165,7 +165,7 @@ static void* recv_thread_func(void* arg) {
     uint8_t buf[MAX_UDP_PAYLOAD];
     LOGI("Receive thread started");
 
-    while (atomic_load(&g_state.running)) {
+    while (g_state.running.load()) {
         struct sockaddr_in from_addr;
         socklen_t from_len = sizeof(from_addr);
 
@@ -180,7 +180,7 @@ static void* recv_thread_func(void* arg) {
         if (n < HEADER_SIZE) continue;
 
         struct proto_header* hdr = (struct proto_header*)buf;
-        atomic_fetch_add(&g_state.packets_received, 1);
+        g_state.packets_received.fetch_add(1);
 
         LOGI("Response seq=%u, payload=%u bytes", hdr->seq, hdr->payload_len);
 
@@ -210,13 +210,13 @@ static void* proxy_thread_func(void* arg) {
 
     LOGI("eBPF ring buffer fd=%d (simulated mode if -1)", g_state.ringbuf_fd);
 
-    while (atomic_load(&g_state.running)) {
+    while (g_state.running.load()) {
         // Simulated: generate a synthetic offload request every 8ms
         // In production, this reads from the eBPF ring buffer via epoll
         struct timespec sleep_time = {0, 8000000}; // 8ms
         nanosleep(&sleep_time, NULL);
 
-        if (!atomic_load(&g_state.running)) break;
+        if (!g_state.running.load()) break;
 
         // Create a simulated offload request
         struct offload_req req = {0};
@@ -231,14 +231,14 @@ static void* proxy_thread_func(void* arg) {
         clock_gettime(CLOCK_MONOTONIC, &ts);
         req.timestamp = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
 
-        uint32_t seq = atomic_fetch_add(&g_state.seq_counter, 1);
+        uint32_t seq = g_state.seq_counter.fetch_add(1);
         int pkt_len = serialize_request(&req, seq, send_buf, sizeof(send_buf));
 
         if (pkt_len > 0) {
             sendto(g_state.udp_sock, send_buf, pkt_len, 0,
                    (struct sockaddr*)&g_state.daemon_addr,
                    sizeof(g_state.daemon_addr));
-            atomic_fetch_add(&g_state.packets_sent, 1);
+            g_state.packets_sent.fetch_add(1);
 
             // FEC: accumulate and send parity when block is complete
             if (fec_add_packet(&g_state.fec, send_buf, pkt_len,
@@ -264,7 +264,7 @@ extern "C" {
 JNIEXPORT jboolean JNICALL
 Java_com_phantom_core_ProxyService_nativeStartProxy(JNIEnv* env, jobject thiz,
                                                      jstring daemon_ip, jint port) {
-    if (atomic_load(&g_state.running)) {
+    if (g_state.running.load()) {
         LOGW("Proxy already running");
         return JNI_FALSE;
     }
@@ -296,14 +296,14 @@ Java_com_phantom_core_ProxyService_nativeStartProxy(JNIEnv* env, jobject thiz,
     g_state.ringbuf_fd = -1; // bpf_obj_get("/sys/fs/bpf/offload_ringbuf");
 
     // Reset state
-    atomic_store(&g_state.packets_sent, 0);
-    atomic_store(&g_state.packets_received, 0);
-    atomic_store(&g_state.total_latency_us, 0);
-    atomic_store(&g_state.seq_counter, 0);
+    g_state.packets_sent.store(0);
+    g_state.packets_received.store(0);
+    g_state.total_latency_us.store(0);
+    g_state.seq_counter.store(0);
     fec_init(&g_state.fec);
 
     // Start threads
-    atomic_store(&g_state.running, 1);
+    g_state.running.store(1);
     pthread_create(&g_state.proxy_thread, NULL, proxy_thread_func, NULL);
     pthread_create(&g_state.recv_thread, NULL, recv_thread_func, NULL);
 
@@ -314,7 +314,7 @@ Java_com_phantom_core_ProxyService_nativeStartProxy(JNIEnv* env, jobject thiz,
 JNIEXPORT void JNICALL
 Java_com_phantom_core_ProxyService_nativeStopProxy(JNIEnv* env, jobject thiz) {
     LOGI("Stopping proxy...");
-    atomic_store(&g_state.running, 0);
+    g_state.running.store(0);
 
     pthread_join(g_state.proxy_thread, NULL);
     pthread_join(g_state.recv_thread, NULL);
@@ -329,15 +329,15 @@ Java_com_phantom_core_ProxyService_nativeStopProxy(JNIEnv* env, jobject thiz) {
 
 JNIEXPORT jstring JNICALL
 Java_com_phantom_core_ProxyService_nativeGetStats(JNIEnv* env, jobject thiz) {
-    long sent = atomic_load(&g_state.packets_sent);
-    long received = atomic_load(&g_state.packets_received);
-    long latency = atomic_load(&g_state.total_latency_us);
+    long sent = g_state.packets_sent.load();
+    long received = g_state.packets_received.load();
+    long latency = g_state.total_latency_us.load();
     double avg_lat = (received > 0) ? (double)latency / received : 0.0;
 
     char stats[256];
     snprintf(stats, sizeof(stats),
              "{\"sent\":%ld,\"received\":%ld,\"avg_latency_us\":%.1f,\"running\":%d}",
-             sent, received, avg_lat, atomic_load(&g_state.running));
+             sent, received, avg_lat, g_state.running.load());
 
     return env->NewStringUTF(stats);
 }
