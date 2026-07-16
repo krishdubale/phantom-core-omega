@@ -131,7 +131,7 @@ typedef struct {
     fec_encoder_t   fec;
 } proxy_state_t;
 
-static proxy_state_t g_state = {0};
+static proxy_state_t g_state;
 
 // ---- Serialize offload request to protocol format ----
 static int serialize_request(const struct offload_req* req, uint32_t seq,
