@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  # Only use the fallback variable to prevent the conflict error
   ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: "true"
 
 jobs:
@@ -54,15 +54,8 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Accept SDK licenses
-        run: yes | sdkmanager --licenses || true
-
-      - name: Install NDK and CMake
-        run: |
-          sdkmanager --install "ndk;25.2.9519653" "cmake;3.22.1" "build-tools;34.0.0" "platforms;android-34"
+      # Removed explicit SDK/NDK install steps — ubuntu-latest already provides them pre-installed!
+      # This completely bypasses the failing sdkmanager step.
 
       - name: Set up Gradle 8.5
         uses: gradle/actions/setup-gradle@v4
