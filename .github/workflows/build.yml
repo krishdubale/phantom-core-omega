@@ -8,6 +8,7 @@ on:
   workflow_dispatch:
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: "true"
 
 jobs:
@@ -63,20 +64,32 @@ jobs:
         run: |
           sdkmanager --install "ndk;25.2.9519653" "cmake;3.22.1" "build-tools;34.0.0" "platforms;android-34"
 
-      - name: Set up Gradle
+      - name: Set up Gradle 8.5
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.5'
 
+      - name: Generate Gradle Wrapper (proxy_app)
+        working-directory: android/proxy_app
+        run: gradle wrapper --gradle-version 8.5
+
+      - name: Generate Gradle Wrapper (demo_app)
+        working-directory: android/demo_app
+        run: gradle wrapper --gradle-version 8.5
+
       - name: Build Proxy APK
         working-directory: android/proxy_app
-        run: gradle assembleDebug --no-daemon
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/25.2.9519653
 
       - name: Build Demo APK
         working-directory: android/demo_app
-        run: gradle assembleDebug --no-daemon
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload APKs
         uses: actions/upload-artifact@v4
