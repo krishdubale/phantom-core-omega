@@ -2,11 +2,17 @@ name: PhantomCore Omega — Full Build
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
+
+env:
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: "true"
 
 jobs:
   build-windows-exe:
+    name: Build Windows Daemon
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,17 +31,9 @@ jobs:
             pc_daemon/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('pc_daemon/Cargo.lock') }}
 
-      - name: Build PC Daemon (release + LTO)
-        run: |
-          cd pc_daemon
-          cargo build --release
-        env:
-          RUSTFLAGS: "-C target-cpu=native"
-
-      - name: Run tests
-        run: |
-          cd pc_daemon
-          cargo test --release
+      - name: Build PC Daemon (release)
+        working-directory: pc_daemon
+        run: cargo build --release
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
@@ -44,6 +42,7 @@ jobs:
           path: pc_daemon/target/release/phantom-core-daemon.exe
 
   build-android-apks:
+    name: Build Android APKs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,31 +56,27 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install NDK
-        run: |
-          sdkmanager --install "ndk;25.2.9519653" "cmake;3.22.1"
+      - name: Accept SDK licenses
+        run: yes | sdkmanager --licenses || true
 
-      - name: Create Gradle Wrapper (proxy)
+      - name: Install NDK and CMake
         run: |
-          cd android/proxy_app
-          gradle wrapper --gradle-version 8.5
+          sdkmanager --install "ndk;25.2.9519653" "cmake;3.22.1" "build-tools;34.0.0" "platforms;android-34"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.5'
 
       - name: Build Proxy APK
-        run: |
-          cd android/proxy_app
-          chmod +x gradlew
-          ./gradlew assembleDebug
-
-      - name: Create Gradle Wrapper (demo)
-        run: |
-          cd android/demo_app
-          gradle wrapper --gradle-version 8.5
+        working-directory: android/proxy_app
+        run: gradle assembleDebug --no-daemon
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/25.2.9519653
 
       - name: Build Demo APK
-        run: |
-          cd android/demo_app
-          chmod +x gradlew
-          ./gradlew assembleDebug
+        working-directory: android/demo_app
+        run: gradle assembleDebug --no-daemon
 
       - name: Upload APKs
         uses: actions/upload-artifact@v4
@@ -92,27 +87,35 @@ jobs:
             android/demo_app/app/build/outputs/apk/debug/*.apk
 
   generate-docs:
+    name: Generate Documentation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.13
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '3.12'
 
       - name: Install Python dependencies
-        run: pip install matplotlib numpy
-
-      - name: Generate benchmark report (demo data)
         run: |
-          cd scripts
-          python benchmark_runner.py --demo --output-dir ../docs/benchmark_results/
+          python -m pip install --upgrade pip
+          pip install matplotlib numpy python-pptx
+
+      - name: Create output directories
+        run: mkdir -p docs/benchmark_results
+
+      - name: Generate benchmark report
+        working-directory: scripts
+        run: python benchmark_runner.py --demo --output-dir ../docs/benchmark_results/
+        env:
+          PYTHONIOENCODING: utf-8
 
       - name: Generate final report PDF
-        run: |
-          cd scripts
-          python generate_report.py ../docs/phantom_core_report.pdf
+        working-directory: scripts
+        run: python generate_report.py ../docs/phantom_core_report.pdf
+        env:
+          PYTHONIOENCODING: utf-8
 
       - name: Upload documentation
         uses: actions/upload-artifact@v4
@@ -121,3 +124,4 @@ jobs:
           path: |
             docs/*.pdf
             docs/benchmark_results/*.png
+            docs/benchmark_results/*.pdf

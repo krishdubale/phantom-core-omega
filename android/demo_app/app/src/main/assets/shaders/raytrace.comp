@@ -1,0 +1,216 @@
+#version 310 es
+// PhantomCore — Raytracing Compute Shader
+// Per-pixel ray-sphere intersection with reflections, shadows, and Phong shading
+
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(rgba8, binding = 0) writeonly uniform highp image2D outputImage;
+
+uniform highp float u_time;
+uniform highp vec2 u_resolution;
+
+// ---- Scene Configuration ----
+const highp float PI = 3.14159265359;
+const highp int MAX_BOUNCES = 3;
+const highp float EPSILON = 0.001;
+const highp float INF = 1e20;
+
+// ---- Structures ----
+struct Ray {
+    highp vec3 origin;
+    highp vec3 direction;
+};
+
+struct HitRecord {
+    highp float t;
+    highp vec3 point;
+    highp vec3 normal;
+    highp vec3 color;
+    highp float reflectivity;
+};
+
+// ---- Sphere intersection ----
+bool intersectSphere(Ray ray, highp vec3 center, highp float radius, out highp float t) {
+    highp vec3 oc = ray.origin - center;
+    highp float a = dot(ray.direction, ray.direction);
+    highp float b = 2.0 * dot(oc, ray.direction);
+    highp float c = dot(oc, oc) - radius * radius;
+    highp float discriminant = b * b - 4.0 * a * c;
+
+    if (discriminant < 0.0) return false;
+
+    highp float sqrtD = sqrt(discriminant);
+    t = (-b - sqrtD) / (2.0 * a);
+    if (t < EPSILON) {
+        t = (-b + sqrtD) / (2.0 * a);
+        if (t < EPSILON) return false;
+    }
+    return true;
+}
+
+// ---- Plane intersection (y = 0) ----
+bool intersectPlane(Ray ray, out highp float t) {
+    if (abs(ray.direction.y) < EPSILON) return false;
+    t = -ray.origin.y / ray.direction.y;
+    return t > EPSILON;
+}
+
+// ---- Checkerboard pattern ----
+highp vec3 checkerboard(highp vec3 point) {
+    highp float scale = 2.0;
+    int ix = int(floor(point.x * scale));
+    int iz = int(floor(point.z * scale));
+    bool isWhite = ((ix + iz) & 1) == 0;
+    return isWhite ? vec3(0.9, 0.9, 0.9) : vec3(0.15, 0.15, 0.2);
+}
+
+// ---- Scene trace ----
+bool traceScene(Ray ray, out HitRecord hit) {
+    hit.t = INF;
+    bool hitAnything = false;
+
+    // Sphere 1: large reflective sphere (center of scene, rotating)
+    highp float angle = u_time * 0.5;
+    highp vec3 sphere1Center = vec3(sin(angle) * 1.5, 1.0, cos(angle) * 1.5 - 3.0);
+    highp float t;
+
+    if (intersectSphere(ray, sphere1Center, 1.0, t) && t < hit.t) {
+        hit.t = t;
+        hit.point = ray.origin + ray.direction * t;
+        hit.normal = normalize(hit.point - sphere1Center);
+        hit.color = vec3(0.8, 0.2, 0.3);
+        hit.reflectivity = 0.7;
+        hitAnything = true;
+    }
+
+    // Sphere 2: smaller metallic sphere
+    highp vec3 sphere2Center = vec3(-1.5, 0.5, -2.5);
+    if (intersectSphere(ray, sphere2Center, 0.5, t) && t < hit.t) {
+        hit.t = t;
+        hit.point = ray.origin + ray.direction * t;
+        hit.normal = normalize(hit.point - sphere2Center);
+        hit.color = vec3(0.3, 0.6, 0.9);
+        hit.reflectivity = 0.9;
+        hitAnything = true;
+    }
+
+    // Sphere 3: glass-like sphere
+    highp vec3 sphere3Center = vec3(2.0, 0.7, -4.0);
+    if (intersectSphere(ray, sphere3Center, 0.7, t) && t < hit.t) {
+        hit.t = t;
+        hit.point = ray.origin + ray.direction * t;
+        hit.normal = normalize(hit.point - sphere3Center);
+        hit.color = vec3(0.2, 0.9, 0.4);
+        hit.reflectivity = 0.5;
+        hitAnything = true;
+    }
+
+    // Ground plane at y = 0
+    if (intersectPlane(ray, t) && t < hit.t) {
+        hit.t = t;
+        hit.point = ray.origin + ray.direction * t;
+        hit.normal = vec3(0.0, 1.0, 0.0);
+        hit.color = checkerboard(hit.point);
+        hit.reflectivity = 0.3;
+        hitAnything = true;
+    }
+
+    return hitAnything;
+}
+
+// ---- Shadow ray check ----
+bool isInShadow(highp vec3 point, highp vec3 lightDir) {
+    Ray shadowRay;
+    shadowRay.origin = point + shadowRay.direction * EPSILON;
+    shadowRay.direction = lightDir;
+    shadowRay.origin = point + lightDir * EPSILON;
+    HitRecord dummy;
+    return traceScene(shadowRay, dummy);
+}
+
+// ---- Main raytracing ----
+highp vec3 raytrace(Ray ray) {
+    highp vec3 finalColor = vec3(0.0);
+    highp float attenuation = 1.0;
+
+    // Rotating point light
+    highp float lightAngle = u_time * 1.2;
+    highp vec3 lightPos = vec3(sin(lightAngle) * 5.0, 5.0, cos(lightAngle) * 5.0 - 3.0);
+    highp vec3 lightColor = vec3(1.0, 0.95, 0.85);
+    highp float lightIntensity = 2.0;
+
+    for (int bounce = 0; bounce < MAX_BOUNCES; bounce++) {
+        HitRecord hit;
+        if (!traceScene(ray, hit)) {
+            // Sky gradient
+            highp float t = 0.5 * (ray.direction.y + 1.0);
+            highp vec3 skyColor = mix(vec3(0.05, 0.05, 0.1), vec3(0.1, 0.15, 0.3), t);
+            finalColor += attenuation * skyColor;
+            break;
+        }
+
+        // Phong shading
+        highp vec3 toLight = normalize(lightPos - hit.point);
+        highp float distance = length(lightPos - hit.point);
+        highp float falloff = lightIntensity / (1.0 + 0.1 * distance * distance);
+
+        // Ambient
+        highp vec3 ambient = 0.05 * hit.color;
+
+        // Diffuse
+        highp float diff = max(dot(hit.normal, toLight), 0.0);
+        highp vec3 diffuse = diff * hit.color * lightColor * falloff;
+
+        // Specular
+        highp vec3 viewDir = normalize(-ray.direction);
+        highp vec3 reflectDir = reflect(-toLight, hit.normal);
+        highp float spec = pow(max(dot(viewDir, reflectDir), 0.0), 64.0);
+        highp vec3 specular = spec * lightColor * falloff * 0.5;
+
+        // Shadow
+        highp float shadow = isInShadow(hit.point, toLight) ? 0.2 : 1.0;
+
+        highp vec3 localColor = ambient + (diffuse + specular) * shadow;
+        finalColor += attenuation * (1.0 - hit.reflectivity) * localColor;
+
+        // Set up reflection ray for next bounce
+        attenuation *= hit.reflectivity;
+        if (attenuation < 0.01) break;
+
+        ray.origin = hit.point + hit.normal * EPSILON;
+        ray.direction = reflect(ray.direction, hit.normal);
+    }
+
+    return finalColor;
+}
+
+void main() {
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    if (pixelCoord.x >= int(u_resolution.x) || pixelCoord.y >= int(u_resolution.y)) return;
+
+    highp vec2 uv = (vec2(pixelCoord) - 0.5 * u_resolution) / u_resolution.y;
+
+    // Camera
+    highp vec3 cameraPos = vec3(0.0, 2.0, 2.0);
+    highp vec3 lookAt = vec3(0.0, 0.5, -3.0);
+    highp vec3 up = vec3(0.0, 1.0, 0.0);
+
+    highp vec3 forward = normalize(lookAt - cameraPos);
+    highp vec3 right = normalize(cross(forward, up));
+    highp vec3 camUp = cross(right, forward);
+
+    highp float fov = 1.0; // tan(fov/2)
+    highp vec3 rayDir = normalize(forward * fov + right * uv.x + camUp * uv.y);
+
+    Ray ray;
+    ray.origin = cameraPos;
+    ray.direction = rayDir;
+
+    highp vec3 color = raytrace(ray);
+
+    // Tone mapping (Reinhard)
+    color = color / (color + vec3(1.0));
+    // Gamma correction
+    color = pow(color, vec3(1.0 / 2.2));
+
+    imageStore(outputImage, pixelCoord, vec4(color, 1.0));
+}
