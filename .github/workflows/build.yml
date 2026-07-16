@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
 
 env:
-  # Only use the fallback variable to prevent the conflict error
-  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: "true"
+  # Opt into Node.js 24 to silence Node 20 deprecation warnings
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   build-windows-exe:
@@ -54,8 +54,8 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      # Removed explicit SDK/NDK install steps — ubuntu-latest already provides them pre-installed!
-      # This completely bypasses the failing sdkmanager step.
+      - name: Accept SDK licenses
+        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
       - name: Set up Gradle 8.5
         uses: gradle/actions/setup-gradle@v4
